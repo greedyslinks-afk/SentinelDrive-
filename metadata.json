@@ -1,0 +1,9 @@
+{
+  "name": "SentinelDrive",
+  "description": "AI Co-pilot and safety sentry with live camera monitoring, hazard detection, and route planning.",
+  "requestFramePermissions": [
+    "camera",
+    "microphone",
+    "geolocation"
+  ]
+}
