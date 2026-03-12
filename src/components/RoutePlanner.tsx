@@ -4,6 +4,7 @@ import { MapPin, Navigation, Loader2, AlertCircle, Plus, X, Map as MapIcon, File
 import Markdown from 'react-markdown';
 import { motion, AnimatePresence } from 'motion/react';
 import { cn } from '../lib/utils';
+import { DriverPreferences } from './DriverProfile';
 
 interface RouteHistoryItem {
   id: string;
@@ -15,9 +16,10 @@ interface RouteHistoryItem {
 interface RoutePlannerProps {
   onMapModeChange?: (isMap: boolean) => void;
   isExpanded?: boolean;
+  driverPreferences?: DriverPreferences;
 }
 
-export function RoutePlanner({ onMapModeChange, isExpanded }: RoutePlannerProps = {}) {
+export function RoutePlanner({ onMapModeChange, isExpanded, driverPreferences }: RoutePlannerProps = {}) {
   const [destination, setDestination] = useState('');
   const [startLocation, setStartLocation] = useState('');
   const [stops, setStops] = useState<string[]>([]);
@@ -25,10 +27,17 @@ export function RoutePlanner({ onMapModeChange, isExpanded }: RoutePlannerProps 
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState('');
   const [mapLinks, setMapLinks] = useState<{ uri: string; title: string }[]>([]);
-  const [avoidTolls, setAvoidTolls] = useState(false);
-  const [avoidHighways, setAvoidHighways] = useState(false);
+  const [avoidTolls, setAvoidTolls] = useState(driverPreferences?.avoidTolls || false);
+  const [avoidHighways, setAvoidHighways] = useState(driverPreferences?.avoidHighways || false);
   const [isListening, setIsListening] = useState(false);
   const [routeHistory, setRouteHistory] = useState<RouteHistoryItem[]>([]);
+
+  React.useEffect(() => {
+    if (driverPreferences) {
+      setAvoidTolls(driverPreferences.avoidTolls);
+      setAvoidHighways(driverPreferences.avoidHighways);
+    }
+  }, [driverPreferences]);
 
   React.useEffect(() => {
     const saved = localStorage.getItem('sentinel_route_history');
@@ -167,6 +176,9 @@ Command: "${transcript}"`,
       const preferences = [];
       if (avoidTolls) preferences.push('avoiding tolls');
       if (avoidHighways) preferences.push('avoiding highways');
+      if (driverPreferences?.preferredSpeed === 'cautious') preferences.push('preferring safer, slower roads');
+      if (driverPreferences?.preferredSpeed === 'brisk') preferences.push('preferring faster roads');
+      
       const prefText = preferences.length > 0 ? ` Please ensure the route prefers ${preferences.join(' and ')}.` : '';
 
       const prompt = startLocation 

@@ -2,7 +2,9 @@ import React, { useState, useEffect } from 'react';
 import { SentinelCamera } from './components/SentinelCamera';
 import { RoutePlanner } from './components/RoutePlanner';
 import { Dashboard } from './components/Dashboard';
-import { Shield, Settings, X, ChevronDown, Map as MapIcon, Activity, Power } from 'lucide-react';
+import { EmergencyAlertSystem } from './components/EmergencyAlertSystem';
+import { DriverPreferences, defaultPreferences } from './components/DriverProfile';
+import { Shield, Settings, X, ChevronDown, Map as MapIcon, Activity, Power, AlertOctagon } from 'lucide-react';
 import { cn } from './lib/utils';
 
 export default function App() {
@@ -17,30 +19,76 @@ export default function App() {
   const [isEndingTrip, setIsEndingTrip] = useState(false);
   
   // Dashboard & Trip States
-  const [activeTab, setActiveTab] = useState<'safety' | 'history' | 'community' | 'gps' | 'trips'>('safety');
+  const [activeTab, setActiveTab] = useState<'safety' | 'history' | 'community' | 'gps' | 'trips' | 'profile'>('safety');
   const [savedTrips, setSavedTrips] = useState<any[]>(() => {
     const saved = localStorage.getItem('sentinel_saved_trips');
     return saved ? JSON.parse(saved) : [];
   });
   
+  // Driver Profile State
+  const [driverPreferences, setDriverPreferences] = useState<DriverPreferences>(() => {
+    const saved = localStorage.getItem('sentinel_driver_prefs');
+    return saved ? JSON.parse(saved) : defaultPreferences;
+  });
+
+  useEffect(() => {
+    localStorage.setItem('sentinel_driver_prefs', JSON.stringify(driverPreferences));
+  }, [driverPreferences]);
+  
   // Safety Score State
   const [speed, setSpeed] = useState(0);
   const [hardStops, setHardStops] = useState(0);
   const [hardTurns, setHardTurns] = useState(0);
+  const [rapidAccelerations, setRapidAccelerations] = useState(0);
   const [score, setScore] = useState(100);
   
   // Safety Lock States
   const [tapCount, setTapCount] = useState(0);
   const [isLocked, setIsLocked] = useState(false);
 
+  // Emergency States
+  const [isEmergency, setIsEmergency] = useState(false);
+  const [emergencyReason, setEmergencyReason] = useState('');
+
+  // Location State
+  const [currentLocation, setCurrentLocation] = useState<{lat: number, lng: number} | null>(null);
+  const currentLocationRef = React.useRef<{lat: number, lng: number} | null>(null);
+  const [isGpsEnabled, setIsGpsEnabled] = useState(false);
+  const [gpsPermissionState, setGpsPermissionState] = useState<PermissionState | 'unknown'>('unknown');
+
+  // Check initial GPS permission
+  useEffect(() => {
+    if (navigator.permissions && navigator.permissions.query) {
+      navigator.permissions.query({ name: 'geolocation' }).then(result => {
+        setGpsPermissionState(result.state);
+        if (result.state === 'granted') {
+          setIsGpsEnabled(true);
+        }
+        result.onchange = () => {
+          setGpsPermissionState(result.state);
+          if (result.state === 'granted') setIsGpsEnabled(true);
+          else setIsGpsEnabled(false);
+        };
+      }).catch(() => {
+        // Fallback for browsers that don't support permissions.query for geolocation
+        setGpsPermissionState('unknown');
+      });
+    }
+  }, []);
+
   // Track Speed and Safety globally
   useEffect(() => {
+    if (!isGpsEnabled) return;
+
     let lastSpeed: number | null = null;
     let lastHeading: number | null = null;
     let lastTime: number | null = null;
 
     const watchId = navigator.geolocation.watchPosition(
       (position) => {
+        currentLocationRef.current = { lat: position.coords.latitude, lng: position.coords.longitude };
+        setCurrentLocation(currentLocationRef.current);
+        
         const currentSpeed = position.coords.speed || 0; // m/s
         const currentHeading = position.coords.heading;
         const currentTime = position.timestamp;
@@ -55,9 +103,16 @@ export default function App() {
           const acceleration = speedDelta / timeDelta; // m/s^2
 
           // Hard stop threshold: deceleration > 3 m/s^2 (approx 0.3g)
-          if (acceleration < -3) {
+          if (acceleration < -6) {
+            // Severe hard stop -> Emergency
+            setIsEmergency(true);
+            setEmergencyReason('Severe sudden stop detected');
+          } else if (acceleration < -3) {
             setHardStops(prev => prev + 1);
             setScore(prev => Math.max(0, prev - 2));
+          } else if (acceleration > 3) {
+            setRapidAccelerations(prev => prev + 1);
+            setScore(prev => Math.max(0, prev - 1));
           }
         }
 
@@ -70,7 +125,11 @@ export default function App() {
           const turnRate = headingDelta / timeDelta; // degrees per second
 
           // Hard turn threshold: > 30 degrees per second while moving
-          if (turnRate > 30 && currentSpeed > 2) {
+          if (turnRate > 60 && currentSpeed > 5) {
+            // Erratic steering -> Emergency
+            setIsEmergency(true);
+            setEmergencyReason('Erratic steering detected');
+          } else if (turnRate > 30 && currentSpeed > 2) {
             setHardTurns(prev => prev + 1);
             setScore(prev => Math.max(0, prev - 1));
           }
@@ -80,11 +139,17 @@ export default function App() {
         lastHeading = currentHeading;
         lastTime = currentTime;
       },
-      (error) => console.warn('GPS Error:', error),
+      (error) => {
+        console.warn('GPS Error:', error);
+        if (error.code === error.PERMISSION_DENIED) {
+          setIsGpsEnabled(false);
+          setGpsPermissionState('denied');
+        }
+      },
       { enableHighAccuracy: true, maximumAge: 0 }
     );
     return () => navigator.geolocation.clearWatch(watchId);
-  }, []);
+  }, [isGpsEnabled]);
 
   // Tap Lock Logic
   useEffect(() => {
@@ -138,8 +203,16 @@ export default function App() {
       setHazards(prev => [{
         id: Math.random().toString(36).substr(2, 9),
         ...hazard,
+        lat: currentLocationRef.current?.lat,
+        lng: currentLocationRef.current?.lng,
         timestamp: new Date()
       }, ...prev].slice(0, 50)); // Keep last 50
+      
+      // Trigger emergency for severe hazards
+      if (hazard.hazard_level >= 4) {
+        setIsEmergency(true);
+        setEmergencyReason(`Severe hazard detected: ${hazard.hazard_type}`);
+      }
     }
   };
 
@@ -153,6 +226,7 @@ export default function App() {
         score,
         hardStops,
         hardTurns,
+        rapidAccelerations,
         hazardsCount: hazards.filter(h => h.manual || h.history_available).length,
         hazards: hazards.filter(h => h.manual || h.history_available)
       };
@@ -172,6 +246,7 @@ export default function App() {
         setScore(100);
         setHardStops(0);
         setHardTurns(0);
+        setRapidAccelerations(0);
         setHazards([]);
       }, 1200); // Wait for animation
     }
@@ -226,9 +301,13 @@ export default function App() {
         }}
       >
         {/* Background: Sentry Camera */}
-        <div className="absolute inset-0 z-0">
-          <SentinelCamera onHazardReported={handleHazardReported} className="w-full h-full" />
-        </div>
+        <SentinelCamera 
+          onHazardReported={handleHazardReported} 
+          hazards={hazards}
+          currentLocation={currentLocation}
+          driverPreferences={driverPreferences}
+          onUpdatePreferences={setDriverPreferences}
+        />
 
         {/* Header Overlay */}
         <header className="absolute top-0 left-0 right-0 z-50 bg-gradient-to-b from-black/80 to-transparent pointer-events-none">
@@ -243,18 +322,26 @@ export default function App() {
             </div>
             
             <div className="flex items-center gap-4">
-              <div className="hidden sm:flex items-center gap-2 px-3 py-1.5 rounded-full bg-emerald-500/20 border border-emerald-500/30 text-emerald-400 text-xs font-medium backdrop-blur-md">
-                <div className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
-                System Online
-              </div>
-              
-              <button 
-                onClick={handleEndTrip}
-                className="flex items-center gap-2 px-4 py-1.5 bg-red-500/90 hover:bg-red-500 text-white text-sm font-medium rounded-lg transition-colors border border-red-400/30 shadow-lg shadow-red-500/20"
-              >
-                <Power className="w-4 h-4" />
-                End Trip
-              </button>
+              {!isGpsEnabled ? (
+                <button
+                  onClick={() => {
+                    if (gpsPermissionState === 'denied') {
+                      alert("GPS permission is denied. Please enable it in your browser settings.");
+                    } else {
+                      setIsGpsEnabled(true);
+                    }
+                  }}
+                  className="hidden sm:flex items-center gap-2 px-3 py-1.5 rounded-full bg-yellow-500/20 border border-yellow-500/30 text-yellow-400 text-xs font-medium backdrop-blur-md hover:bg-yellow-500/30 transition-colors cursor-pointer"
+                >
+                  <div className="w-1.5 h-1.5 rounded-full bg-yellow-400" />
+                  Enable GPS
+                </button>
+              ) : (
+                <div className="hidden sm:flex items-center gap-2 px-3 py-1.5 rounded-full bg-emerald-500/20 border border-emerald-500/30 text-emerald-400 text-xs font-medium backdrop-blur-md">
+                  <div className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
+                  GPS Active
+                </div>
+              )}
               
               <div className="relative">
                 <button 
@@ -329,7 +416,11 @@ export default function App() {
               >
                 <X className="w-4 h-4" />
               </button>
-              <RoutePlanner onMapModeChange={setIsRouteExpanded} isExpanded={isRouteExpanded} />
+              <RoutePlanner 
+                onMapModeChange={setIsRouteExpanded} 
+                isExpanded={isRouteExpanded} 
+                driverPreferences={driverPreferences}
+              />
             </div>
           </div>
         )}
@@ -354,12 +445,19 @@ export default function App() {
                 speed={speed}
                 hardStops={hardStops}
                 hardTurns={hardTurns}
+                rapidAccelerations={rapidAccelerations}
                 score={score}
                 activeTab={activeTab}
                 setActiveTab={setActiveTab}
                 savedTrips={savedTrips}
                 onDeleteTrip={handleDeleteTrip}
                 onTransferTrip={handleTransferTrip}
+                onTriggerSOS={() => {
+                  setIsEmergency(true);
+                  setEmergencyReason('Manual SOS Triggered');
+                }}
+                driverPreferences={driverPreferences}
+                onSavePreferences={setDriverPreferences}
               />
             </div>
           </div>
@@ -390,7 +488,7 @@ export default function App() {
         )}
 
         {/* Tap Lock Overlay */}
-        {isLocked && (
+        {isLocked && !isEmergency && (
           <div className="absolute inset-0 z-[100] bg-red-950/80 backdrop-blur-sm flex flex-col items-center justify-center pointer-events-auto">
             <Shield className="w-24 h-24 text-red-500 mb-6 animate-pulse" />
             <h2 className="text-4xl font-bold text-white mb-2 text-center">Safety Lock Active</h2>
@@ -402,6 +500,14 @@ export default function App() {
             </div>
           </div>
         )}
+
+        {/* Emergency Alert System */}
+        <EmergencyAlertSystem 
+          isEmergency={isEmergency}
+          reason={emergencyReason}
+          location={currentLocation}
+          onDismiss={() => setIsEmergency(false)}
+        />
       </div>
     </div>
   );
